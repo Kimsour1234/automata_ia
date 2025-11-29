@@ -3,39 +3,40 @@ import json
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
-# 🔧 Variables d’environnement
+# 🔧 ENVIRONMENT VARIABLES
 AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")  # "Monitoring_2"
+AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")  # ex: Monitoring_2
 
 
-# 🎨 Formatage des valeurs
-def format_sensor(value):
-    if not value:
+# 🎨 FORMATAGE DES ÉMOTIONS
+def format_sensor(v):
+    if not v:
         return ""
-    v = value.lower()
+    v = v.lower()
+    if v == "error":
+        return "🔴 Error"
     if v == "log":
         return "🟢 Log"
-    if v == "error":
-        return "🔴 Erreur"
-    return value
+    return v
 
 
-def format_status(value):
-    if not value:
+def format_status(v):
+    if not v:
         return ""
-    v = value.lower()
-    if v in ["succès", "success"]:
+    v = v.lower()
+    if v == "success":
         return "🟢 Succès"
-    if v in ["échec", "failed"]:
+    if v == "échec" or v == "failed" or v == "error":
         return "🔴 Échec"
-    return value
+    return v
 
 
 class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
-        # 📥 Lire le JSON reçu
+
+        # 📥 Lecture du JSON reçu
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length)
 
@@ -43,11 +44,12 @@ class handler(BaseHTTPRequestHandler):
             body = json.loads(raw)
         except Exception as e:
             self.send_response(400)
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(f"Invalid JSON: {e}".encode())
+            self.wfile.write(json.dumps({"error": f"Invalid JSON: {e}"}).encode())
             return
 
-        # 🔗 Construire l’URL Airtable
+        # 🔗 URL Airtable
         url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
 
         headers = {
@@ -55,7 +57,7 @@ class handler(BaseHTTPRequestHandler):
             "Content-Type": "application/json"
         }
 
-        # 📝 Champs envoyés à Airtable
+        # 🧩 Construction de l’enregistrement Airtable
         fields = {
             "Workflow": body.get("Workflow", ""),
             "Module": body.get("Module", ""),
@@ -64,39 +66,47 @@ class handler(BaseHTTPRequestHandler):
             "Message": body.get("Message", "")
         }
 
-        # 🕒 Date (optionnelle)
-        if "Date" in body:
-            fields["Date"] = body["Date"]
-
-        # 🧠 Champs IA (optionnels)
+        # Champs IA (facultatifs)
         if "IA_Score" in body:
-            fields["IA_Score"] = body["IA_Score"]
+            fields["IA_Score"] = body.get("IA_Score", "")
+
         if "IA_Diagnostic" in body:
-            fields["IA_Diagnostic"] = body["IA_Diagnostic"]
+            fields["IA_Diagnostic"] = body.get("IA_Diagnostic", "")
+
         if "IA_Recommendation" in body:
-            fields["IA_Recommendation"] = body["IA_Recommendation"]
+            fields["IA_Recommendation"] = body.get("IA_Recommendation", "")
 
-        payload = json.dumps({"fields": fields}).encode()
+        # Date (si fournie)
+        if "Date" in body:
+            fields["Date"] = body.get("Date")
 
-        req = urllib.request.Request(
-            url, data=payload, headers=headers, method="POST"
-        )
+        data = {"fields": fields}
+        payload = json.dumps(data).encode()
 
-        # 📤 Envoi vers Airtable + renvoi du record_id
+        # 📤 Envoi Airtable
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
         try:
             with urllib.request.urlopen(req) as response:
-                airtable_response = json.loads(response.read().decode())
 
-                record_id = airtable_response.get("id", "")
-
+                # Réponse Vercel → Make (important pour Parse response)
                 self.send_response(200)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
+
+                # On renvoie à Make exactement ce qu’on a reçu
                 self.wfile.write(json.dumps({
                     "status": "OK",
-                    "record_id": record_id
+                    "stored": fields
                 }).encode())
 
         except Exception as e:
+
+            # ❌ Erreur Airtable
             self.send_response(500)
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(f"Airtable error: {e}".encode())
+
+            self.wfile.write(json.dumps({
+                "error": f"Airtable error: {e}"
+            }).encode())
