@@ -15,7 +15,7 @@ def format_sensor(v):
         return ""
     v = v.lower()
     if v == "error":
-        return "🔴 Error"
+        return "🔴 Erreur"
     if v == "log":
         return "🟢 Log"
     return v
