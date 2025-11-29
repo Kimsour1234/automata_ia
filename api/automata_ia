@@ -1,1 +1,99 @@
+import os
+import json
+import urllib.request
+from http.server import BaseHTTPRequestHandler
 
+# 🔐 Variables d'environnement (à définir dans Vercel)
+AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
+AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
+AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")  # "Monitoring_2"
+
+
+def format_status(value: str) -> str:
+    """Ajoute les icônes pour Sensor / Statut en français."""
+    if not value:
+        return ""
+
+    v = value.lower().strip()
+
+    # Sensor
+    if v == "log":
+        return "🟢 Log"
+    if v == "erreur":
+        return "🔴 Erreur"
+
+    # Statut
+    if v == "succès":
+        return "🟢 Succès"
+    if v == "échec":
+        return "🔴 Échec"
+
+    # fallback : on renvoie tel quel
+    return value
+
+
+class handler(BaseHTTPRequestHandler):
+
+    def do_POST(self):
+        # Lire le JSON envoyé par Make
+        length = int(self.headers.get("Content-Length", 0))
+        raw_body = self.rfile.read(length)
+
+        try:
+            body = json.loads(raw_body)
+        except Exception as e:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(f"Invalid JSON: {e}".encode())
+            return
+
+        # URL Airtable (table unique Monitoring_2)
+        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
+
+        headers = {
+            "Authorization": f"Bearer {AIRTABLE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        # 🧱 Champs de base (logs simples)
+        fields = {
+            "Workflow": body.get("Workflow", ""),
+            "Module": body.get("Module", ""),
+            "Sensor": format_status(body.get("Sensor", "")),
+            "Statut": format_status(body.get("Statut", "")),
+            "Message": body.get("Message", "")
+            # ⚠️ Pas de "Date" → gérée par Airtable (Created time)
+        }
+
+        # 🧠 Champs IA (optionnels mais on les envoie quand même)
+        # Assure-toi que les colonnes existent dans Airtable
+        fields["Résumé global"] = body.get("ResumeGlobal", "")
+        fields["Tendances détectées"] = body.get("Tendances", "")
+        fields["Modules à risque"] = body.get("ModulesRisque", "")
+        fields["Recommandations"] = body.get("Recommandations", "")
+        fields["Top 3 priorités"] = body.get("Priorites", "")
+
+        fields["Période analysée"] = body.get("Periode", "")
+        fields["Total logs"] = body.get("TotalLogs", None)
+        fields["Total erreurs"] = body.get("TotalErreurs", None)
+
+        payload = json.dumps({"fields": fields}).encode()
+
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers=headers,
+            method="POST"
+        )
+
+        try:
+            with urllib.request.urlopen(req) as response:
+                # Si Airtable répond 200, on renvoie OK à Make
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+        except Exception as e:
+            # En cas d'erreur Airtable (422, 404, etc.)
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f"Airtable error: {e}".encode())
