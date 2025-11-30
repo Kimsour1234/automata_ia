@@ -3,21 +3,17 @@ import json
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
-# 🌐 ENV VARIABLES
+# 🔐 ENVIRONMENT VARIABLES
 AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
 AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")   # ex: Monitoring_2
 
 
-def clean(s):
-    """Supprime tous les caractères interdits JSON + contrôle"""
-    if not isinstance(s, str):
-        s = str(s)
-    return ''.join(c for c in s if ord(c) >= 32)
-
-
+# 🎨 FORMATAGE SENSOR
 def format_sensor(v):
-    v = clean(v).lower()
+    if not v:
+        return ""
+    v = v.lower()
     if v == "error":
         return "🔴 Erreur"
     if v == "log":
@@ -25,11 +21,14 @@ def format_sensor(v):
     return v
 
 
+# 🎨 FORMATAGE STATUT
 def format_status(v):
-    v = clean(v).lower()
-    if v == "success":
+    if not v:
+        return ""
+    v = v.lower()
+    if v in ["success", "succès"]:
         return "🟢 Succès"
-    if v in ["failed", "error", "échec"]:
+    if v in ["échec", "failed", "error"]:
         return "🔴 Échec"
     return v
 
@@ -38,55 +37,66 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
 
+        # 📥 Lire JSON
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length)
 
-        # 🛡️ SAFE JSON — On nettoie AVANT de parser
-        string = raw.decode(errors="ignore")
-        string = clean(string)
-
         try:
-            body = json.loads(string)
-        except:
-            # 🔥 En dernier recours → on encapsule le message brut
-            body = {"raw": string}
+            body = json.loads(raw)
+        except Exception as e:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": f"Invalid JSON: {e}"}).encode())
+            return
 
-        workflow = clean(body.get("Workflow", ""))
-        module = clean(body.get("Module", ""))
-        sensor_raw = clean(body.get("Sensor", "")).lower()
-        statut_raw = clean(body.get("Statut", ""))
-        message_raw = clean(body.get("Message", ""))
-
-        has_ia = any(k in body for k in ["IA_Score", "IA_Diagnostic", "IA_Recommendation"])
-
-        # 🟥 BAD END 1er passage → pas de stockage
-        if sensor_raw == "error" and not has_ia:
+        ############################################
+        # 🟥 PHASE 1 — BAD ENDING SANS IA → PAS DE STOCKAGE
+        ############################################
+        if "IA_Diagnostic" not in body and "IA_Score" not in body:
+            # Renvoi brut pour Parse Response dans Make
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
+
             self.wfile.write(json.dumps({
                 "status": "PRE_IA_OK",
                 "received": body
             }).encode())
-            return
 
-        # 🟩 TRUE END ou BAD END 2e passage → STOCKAGE
+            return  # STOP → pas de stockage Airtable
+
+
+        ############################################
+        # 🟩 PHASE 2 — POST IA → STOCKAGE COMPLET
+        # 🟩 GOOD ENDING → STOCKAGE DIRECT
+        ############################################
+
+        # Préparation des champs pour Airtable
         fields = {
-            "Workflow": workflow,
-            "Module": module,
-            "Sensor": format_sensor(sensor_raw),
-            "Statut": format_status(statut_raw),
-            "Message": message_raw,
-            "IA_Score": clean(body.get("IA_Score", "")),
-            "IA_Diagnostic": clean(body.get("IA_Diagnostic", "")),
-            "IA_Recommendation": clean(body.get("IA_Recommendation", ""))
+            "Workflow": body.get("Workflow", ""),
+            "Module": body.get("Module", ""),
+            "Sensor": format_sensor(body.get("Sensor", "")),
+            "Statut": format_status(body.get("Statut", "")),
+            "Message": body.get("Message", ""),
+
+            # Champs IA
+            "IA_Diagnostic": body.get("IA_Diagnostic", ""),
+            "IA_Recommendation": body.get("IA_Recommendation", ""),
+            "IA_Score": body.get("IA_Score", ""),
+            "IA_Type_Problème": body.get("IA_Type_Problème", ""),
+            "IA_Priorité": body.get("IA_Priorité", "")
         }
 
+        # Ajouter Date si envoyée
         if "Date" in body:
-            fields["Date"] = clean(body["Date"])
+            fields["Date"] = body.get("Date")
 
-        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
+        # Payload Airtable
         payload = json.dumps({"fields": fields}).encode()
+
+        # URL Airtable
+        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
 
         headers = {
             "Authorization": f"Bearer {AIRTABLE_API_KEY}",
@@ -96,19 +106,22 @@ class handler(BaseHTTPRequestHandler):
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
         try:
-            with urllib.request.urlopen(req) as response:
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    "status": "STORED",
-                    "stored": fields
-                }).encode())
+            urllib.request.urlopen(req)
+
+            # Réponse Make
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "STORED",
+                "stored": fields
+            }).encode())
 
         except Exception as e:
+            # Si Airtable plante
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
-                "error": f"Airtable error: {clean(str(e))}"
+                "error": f"Airtable error: {e}"
             }).encode())
