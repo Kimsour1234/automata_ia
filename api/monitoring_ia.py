@@ -3,13 +3,13 @@ import json
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
-# 🔐 ENVIRONMENT VARIABLES
+# 🔐 ENV VARIABLES
 AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")   # ex: Monitoring_2
+AIRTABLE_TABLE_NAME = os.environ.get("AIRTABLE_TABLE_NAME")  # ex: Monitoring_2
 
 
-# 🎨 FORMATAGE SENSOR
+# 🎨 FORMAT SENSOR
 def format_sensor(v):
     if not v:
         return ""
@@ -21,7 +21,7 @@ def format_sensor(v):
     return v
 
 
-# 🎨 FORMATAGE STATUT
+# 🎨 FORMAT STATUT
 def format_status(v):
     if not v:
         return ""
@@ -37,7 +37,7 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
 
-        # 📥 Lire JSON
+        # Lire le JSON reçu
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length)
 
@@ -50,37 +50,44 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": f"Invalid JSON: {e}"}).encode())
             return
 
-        ############################################
-        # 🟥 PHASE 1 — BAD ENDING SANS IA → PAS DE STOCKAGE
-        ############################################
-        if "IA_Diagnostic" not in body and "IA_Score" not in body:
-            # Renvoi brut pour Parse Response dans Make
+        # Détection IA
+        has_ia = (
+            "IA_Diagnostic" in body
+            or "IA_Score" in body
+            or "IA_Recommendation" in body
+            or "IA_Type_Problème" in body
+            or "IA_Priorité" in body
+        )
+
+        statut = body.get("Statut", "").lower()
+
+        ########################################################
+        # 🟥 BAD ENDING phase 1 (Erreur ET pas d’IA) → PAS stockage
+        ########################################################
+        if statut in ["échec", "failed", "error"] and not has_ia:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
+            self.wfile.write(json.dumps({"status": "PRE_IA_OK"}).encode())
+            return
 
-            self.wfile.write(json.dumps({
-                "status": "PRE_IA_OK",
-                "received": body
-            }).encode())
+        ########################################################
+        # 🟩 TRUE ENDING (Succès AND pas IA) → STOCKAGE
+        ########################################################
+        # On laisse passer vers stockage
 
-            return  # STOP → pas de stockage Airtable
+        ########################################################
+        # 🟦 BAD ENDING phase 2 (IA) → STOCKAGE
+        ########################################################
+        # On laisse passer vers stockage
 
-
-        ############################################
-        # 🟩 PHASE 2 — POST IA → STOCKAGE COMPLET
-        # 🟩 GOOD ENDING → STOCKAGE DIRECT
-        ############################################
-
-        # Préparation des champs pour Airtable
+        # Préparer champs Airtable
         fields = {
             "Workflow": body.get("Workflow", ""),
             "Module": body.get("Module", ""),
             "Sensor": format_sensor(body.get("Sensor", "")),
             "Statut": format_status(body.get("Statut", "")),
             "Message": body.get("Message", ""),
-
-            # Champs IA
             "IA_Diagnostic": body.get("IA_Diagnostic", ""),
             "IA_Recommendation": body.get("IA_Recommendation", ""),
             "IA_Score": body.get("IA_Score", ""),
@@ -88,14 +95,12 @@ class handler(BaseHTTPRequestHandler):
             "IA_Priorité": body.get("IA_Priorité", "")
         }
 
-        # Ajouter Date si envoyée
+        # Ajouter Date si fournie
         if "Date" in body:
             fields["Date"] = body.get("Date")
 
-        # Payload Airtable
         payload = json.dumps({"fields": fields}).encode()
 
-        # URL Airtable
         url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
 
         headers = {
@@ -108,20 +113,20 @@ class handler(BaseHTTPRequestHandler):
         try:
             urllib.request.urlopen(req)
 
-            # Réponse Make
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
+
             self.wfile.write(json.dumps({
                 "status": "STORED",
                 "stored": fields
             }).encode())
 
         except Exception as e:
-            # Si Airtable plante
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
+
             self.wfile.write(json.dumps({
                 "error": f"Airtable error: {e}"
             }).encode())
