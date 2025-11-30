@@ -37,7 +37,7 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
 
-        # Lire le JSON reçu
+        # Lire JSON reçu
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length)
 
@@ -50,12 +50,10 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": f"Invalid JSON: {e}"}).encode())
             return
 
-        # Détection IA
+        # Détection IA (avec les 3 champs restants)
         has_ia = (
             "IA_Diagnostic" in body
-            or "IA_Score" in body
             or "IA_Recommendation" in body
-            or "IA_Type_Problème" in body
             or "IA_Priorité" in body
         )
 
@@ -72,14 +70,14 @@ class handler(BaseHTTPRequestHandler):
             return
 
         ########################################################
-        # 🟩 TRUE ENDING (Succès AND pas IA) → STOCKAGE
+        # 🟩 TRUE ENDING (Succès AND pas IA) → STOCKAGE DIRECT
         ########################################################
-        # On laisse passer vers stockage
+        # (On laisse passer → stockage)
 
         ########################################################
-        # 🟦 BAD ENDING phase 2 (IA) → STOCKAGE
+        # 🟦 BAD ENDING phase 2 (IA reçue) → STOCKAGE
         ########################################################
-        # On laisse passer vers stockage
+        # (On laisse passer → stockage)
 
         # Préparer champs Airtable
         fields = {
@@ -90,12 +88,10 @@ class handler(BaseHTTPRequestHandler):
             "Message": body.get("Message", ""),
             "IA_Diagnostic": body.get("IA_Diagnostic", ""),
             "IA_Recommendation": body.get("IA_Recommendation", ""),
-            "IA_Score": body.get("IA_Score", ""),
-            "IA_Type_Problème": body.get("IA_Type_Problème", ""),
             "IA_Priorité": body.get("IA_Priorité", "")
         }
 
-        # Ajouter Date si fournie
+        # Ajouter date si fournie
         if "Date" in body:
             fields["Date"] = body.get("Date")
 
